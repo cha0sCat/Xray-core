@@ -170,7 +170,7 @@ func (h *Handler) Tag() string {
 // Dispatch implements proxy.Outbound.Dispatch.
 func (h *Handler) Dispatch(ctx context.Context, link *transport.Link) {
 	outbounds := session.OutboundsFromContext(ctx)
-	ob := outbounds[len(outbounds) - 1]
+	ob := outbounds[len(outbounds)-1]
 	if ob.Target.Network == net.Network_UDP && ob.OriginalTarget.Address != nil && ob.OriginalTarget.Address != ob.Target.Address {
 		link.Reader = &buf.EndpointOverrideReader{Reader: link.Reader, Dest: ob.Target.Address, OriginalDest: ob.OriginalTarget.Address}
 		link.Writer = &buf.EndpointOverrideWriter{Writer: link.Writer, Dest: ob.Target.Address, OriginalDest: ob.OriginalTarget.Address}
@@ -247,7 +247,7 @@ func (h *Handler) Dial(ctx context.Context, dest net.Destination) (stat.Connecti
 				outbounds := session.OutboundsFromContext(ctx)
 				ctx = session.ContextWithOutbounds(ctx, append(outbounds, &session.Outbound{
 					Target: dest,
-					Tag: tag,
+					Tag:    tag,
 				})) // add another outbound in session ctx
 				opts := pipe.OptionsFromContext(ctx)
 				uplinkReader, uplinkWriter := pipe.New(opts...)
@@ -269,11 +269,14 @@ func (h *Handler) Dial(ctx context.Context, dest net.Destination) (stat.Connecti
 
 		if h.senderSettings.Via != nil {
 			outbounds := session.OutboundsFromContext(ctx)
-			ob := outbounds[len(outbounds) - 1]
+			ob := outbounds[len(outbounds)-1]
+			address := h.senderSettings.Via.AsAddress()
 			if h.senderSettings.ViaCidr == "" {
-				ob.Gateway = h.senderSettings.Via.AsAddress()
-			} else { //Get a random address.
-				ob.Gateway = ParseRandomIPv6(h.senderSettings.Via.AsAddress(), h.senderSettings.ViaCidr)
+				ob.Gateway = address
+			} else if address.Family().IsIPv4() {
+				ob.Gateway = ParseRandomIPv4(address, h.senderSettings.ViaCidr)
+			} else if address.Family().IsIPv6() { //Get a random address.
+				ob.Gateway = ParseRandomIPv6(address, h.senderSettings.ViaCidr)
 			}
 		}
 	}
@@ -285,7 +288,7 @@ func (h *Handler) Dial(ctx context.Context, dest net.Destination) (stat.Connecti
 	conn, err := internet.Dial(ctx, dest, h.streamSettings)
 	conn = h.getStatCouterConnection(conn)
 	outbounds := session.OutboundsFromContext(ctx)
-	ob := outbounds[len(outbounds) - 1]
+	ob := outbounds[len(outbounds)-1]
 	ob.Conn = conn
 	return conn, err
 }
@@ -317,7 +320,6 @@ func (h *Handler) Close() error {
 	return nil
 }
 
-
 func ParseRandomIPv6(address net.Address, prefix string) net.Address {
 	_, network, _ := gonet.ParseCIDR(address.IP().String() + "/" + prefix)
 
@@ -332,6 +334,24 @@ func ParseRandomIPv6(address net.Address, prefix string) net.Address {
 
 	randomIPBytes := randomIPBigInt.Bytes()
 	randomIPBytes = append(make([]byte, 16-len(randomIPBytes)), randomIPBytes...)
+
+	return net.ParseAddress(gonet.IP(randomIPBytes).String())
+}
+
+func ParseRandomIPv4(address net.Address, prefix string) net.Address {
+	_, network, _ := gonet.ParseCIDR(address.IP().String() + "/" + prefix)
+
+	maskSize, totalBits := network.Mask.Size()
+	subnetSize := big.NewInt(1).Lsh(big.NewInt(1), uint(totalBits-maskSize))
+
+	// random
+	randomBigInt, _ := rand.Int(rand.Reader, subnetSize)
+
+	startIPBigInt := big.NewInt(0).SetBytes(network.IP.To4())
+	randomIPBigInt := big.NewInt(0).Add(startIPBigInt, randomBigInt)
+
+	randomIPBytes := randomIPBigInt.Bytes()
+	randomIPBytes = append(make([]byte, 4-len(randomIPBytes)), randomIPBytes...)
 
 	return net.ParseAddress(gonet.IP(randomIPBytes).String())
 }
